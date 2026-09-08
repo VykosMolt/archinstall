@@ -1,3 +1,5 @@
+from codecs import escape_decode
+from os import fsdecode
 from pathlib import Path
 from subprocess import CalledProcessError
 
@@ -198,25 +200,13 @@ def swapon(path: Path) -> None:
 		raise DiskError(f'Could not enable swap {path}:\n{err.message}')
 
 
-def _active_swap_areas() -> set[Path]:
-	# swapon includes swap files; lsblk only handles block devices.
-	try:
-		output = SysCommand(['swapon', '--show=NAME', '--noheadings', '--raw']).decode()
-	except SysCallError as err:
-		raise DiskError(f'Could not read the active swap areas:\n{err.message}')
-
-	return {Path(line).resolve() for line in output.splitlines() if line}
-
-
 def swapoff(path: Path) -> None:
-	# swapoff rejects inactive areas; resolve aliases before checking.
-	if path.resolve() not in _active_swap_areas():
-		return
-
-	debug(f'Disabling swap: {path}')
-
 	try:
-		SysCommand(['swapoff', str(path)])
+		output = SysCommand(['swapon', '--show=NAME', '--noheadings', '--raw']).output()
+		# --raw escapes filename bytes as \xNN.
+		active = {Path(fsdecode(escape_decode(line)[0])).resolve() for line in output.splitlines()}
+		if path.resolve() in active:
+			SysCommand(['swapoff', str(path)])
 	except SysCallError as err:
 		raise DiskError(f'Could not disable swap {path}:\n{err.message}')
 

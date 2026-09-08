@@ -1,12 +1,14 @@
-from collections.abc import Callable
+from os import fsdecode, fsencode
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock, call
 
 import pytest
 
 from archinstall.lib.disk import utils
 from archinstall.lib.exceptions import DiskError, SysCallError
-from archinstall.lib.models.device import LsblkInfo
+from archinstall.lib.log import logger
+from archinstall.lib.models.device import FilesystemType, LsblkInfo
 
 SAMPLE_PARTITION: dict[str, Any] = {
 	'name': 'sda2',
@@ -33,113 +35,100 @@ SAMPLE_PARTITION: dict[str, Any] = {
 }
 
 SWAPON_QUERY = ['swapon', '--show=NAME', '--noheadings', '--raw']
-SWAPON_OUTPUT = '/dev/sda2\n/swapfile\n'
 
 
-def _lsblk_info(**overrides: Any) -> LsblkInfo:
-	return LsblkInfo.model_validate(SAMPLE_PARTITION | overrides)
+@pytest.mark.parametrize(
+	('mountpoint', 'mountpoints', 'expected'),
+	[
+		('[SWAP]', ['[SWAP]'], (None, [])),
+		('[SWAP]', [None], (None, [])),
+		(None, ['[SWAP]'], (None, [])),
+		(None, [None], (None, [])),
+		('/home', ['/home', None], (Path('/home'), [Path('/home')])),
+		('/mnt/[SWAP]', ['/mnt/[SWAP]'], (Path('/mnt/[SWAP]'), [Path('/mnt/[SWAP]')])),
+	],
+)
+def test_swap_mountpoints(mountpoint: str | None, mountpoints: list[str | None], expected: tuple[Path | None, list[Path]]) -> None:
+	info = LsblkInfo.model_validate(SAMPLE_PARTITION | {'mountpoint': mountpoint, 'mountpoints': mountpoints})
+	assert (info.mountpoint, info.mountpoints) == expected
 
 
-def _fake_syscommand(commands: list[list[str]], swapon_output: str = SWAPON_OUTPUT) -> Callable[[list[str]], Any]:
-	class _Result:
-		def __init__(self, output: str) -> None:
-			self._output = output
-
-		def decode(self) -> str:
-			return self._output
-
-	def _run(cmd: list[str]) -> _Result:
-		commands.append(cmd)
-		return _Result(swapon_output if cmd[0] == 'swapon' else '')
-
-	return _run
-
-
-def test_active_swap_mountpoint_is_not_parsed_as_a_path() -> None:
-	info = _lsblk_info(mountpoint='[SWAP]', mountpoints=['[SWAP]'])
-
-	assert info.mountpoint is None
-	assert info.mountpoints == []
-
-
-def test_sentinel_is_removed_from_each_field_independently() -> None:
-	assert _lsblk_info(mountpoint='[SWAP]', mountpoints=[None]).mountpoint is None
-	assert _lsblk_info(mountpoint=None, mountpoints=['[SWAP]']).mountpoints == []
-
-
-def test_inactive_swap_has_no_mountpoints() -> None:
-	info = _lsblk_info()
-
-	assert info.mountpoint is None
-	assert info.mountpoints == []
-
-
-def test_regular_mountpoints_are_untouched() -> None:
-	info = _lsblk_info(fstype='ext4', mountpoint='/home', mountpoints=['/home'])
-
-	assert info.mountpoint == Path('/home')
-	assert info.mountpoints == [Path('/home')]
-
-
-def test_a_mountpoint_containing_brackets_is_kept() -> None:
-	info = _lsblk_info(fstype='ext4', mountpoint='/mnt/[backup]', mountpoints=['/mnt/[backup]'])
-
-	assert info.mountpoint == Path('/mnt/[backup]')
-	assert info.mountpoints == [Path('/mnt/[backup]')]
-
-
-def test_swapoff_does_nothing_when_the_path_is_not_active(monkeypatch: pytest.MonkeyPatch) -> None:
-	commands: list[list[str]] = []
-	monkeypatch.setattr(utils, 'SysCommand', _fake_syscommand(commands))
-
-	utils.swapoff(Path('/dev/sdb1'))
-
-	assert commands == [SWAPON_QUERY]
-
-
-def test_swapoff_disables_an_active_swap_area(monkeypatch: pytest.MonkeyPatch) -> None:
-	commands: list[list[str]] = []
-	monkeypatch.setattr(utils, 'SysCommand', _fake_syscommand(commands))
+@pytest.mark.parametrize('active', [False, True])
+def test_swapoff_only_disables_active_swap(monkeypatch: pytest.MonkeyPatch, active: bool) -> None:
+	command = Mock()
+	command.return_value.output.return_value = b'/dev/sda2\n' if active else b'/dev/sdb1\n'
+	monkeypatch.setattr(utils, 'SysCommand', command)
 
 	utils.swapoff(Path('/dev/sda2'))
 
-	assert commands == [SWAPON_QUERY, ['swapoff', '/dev/sda2']]
+	expected = [call(SWAPON_QUERY)]
+	if active:
+		expected.append(call(['swapoff', '/dev/sda2']))
+	assert command.call_args_list == expected
 
 
-def test_swapoff_matches_an_active_area_reached_through_a_symlink(
-	monkeypatch: pytest.MonkeyPatch,
-	tmp_path: Path,
-) -> None:
-	device = tmp_path / 'sda2'
+@pytest.mark.parametrize(
+	('name', 'encoded'),
+	[
+		('sda2', b'sda2'),
+		('swap file', b'swap\\x20file'),
+		('swap\nfile', b'swap\\x0afile'),
+		('swap\\x20file', b'swap\\x5cx20file'),
+		('swäp', 'swäp'.encode()),
+		(fsdecode(b'swap-\xff'), b'swap-\\xff'),
+	],
+)
+def test_swapoff_matches_escaped_paths_and_aliases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, encoded: bytes) -> None:
+	device = tmp_path / name
 	device.touch()
-	link = tmp_path / 'by-uuid'
-	link.symlink_to(device)
+	alias = tmp_path / 'by-uuid'
+	alias.symlink_to(device)
+	command = Mock()
+	command.return_value.output.return_value = fsencode(tmp_path) + b'/' + encoded + b'\n'
+	monkeypatch.setattr(utils, 'SysCommand', command)
 
-	commands: list[list[str]] = []
-	monkeypatch.setattr(utils, 'SysCommand', _fake_syscommand(commands, f'{device}\n'))
+	utils.swapoff(alias)
 
-	utils.swapoff(link)
-
-	assert commands == [SWAPON_QUERY, ['swapoff', str(link)]]
+	assert command.call_args_list == [call(SWAPON_QUERY), call(['swapoff', str(alias)])]
 
 
-def test_a_failed_swap_query_is_raised_as_a_disk_error(monkeypatch: pytest.MonkeyPatch) -> None:
-	def _run(cmd: list[str]) -> Any:
-		raise SysCallError('swapon failed', exit_code=1)
+@pytest.mark.parametrize('query_fails', [False, True])
+def test_swapoff_errors(monkeypatch: pytest.MonkeyPatch, query_fails: bool) -> None:
+	result = Mock()
+	result.output.return_value = b'/dev/sda2\n'
+	error = SysCallError('command failed', exit_code=1)
+	command = Mock(side_effect=[error] if query_fails else [result, error])
+	monkeypatch.setattr(utils, 'SysCommand', command)
 
-	monkeypatch.setattr(utils, 'SysCommand', _run)
-
-	with pytest.raises(DiskError):
+	with pytest.raises(DiskError, match='Could not disable swap /dev/sda2:'):
 		utils.swapoff(Path('/dev/sda2'))
 
+	expected = [call(SWAPON_QUERY)]
+	if not query_fails:
+		expected.append(call(['swapoff', '/dev/sda2']))
+	assert command.call_args_list == expected
 
-def test_swapoff_failure_is_raised_as_a_disk_error(monkeypatch: pytest.MonkeyPatch) -> None:
-	def _run(cmd: list[str]) -> Any:
-		if cmd[0] == 'swapoff':
-			raise SysCallError('swapoff failed', exit_code=255)
-		return _fake_syscommand([])(cmd)
 
-	monkeypatch.setattr(utils, 'SysCommand', _run)
+def test_existing_partitions_disable_swap_and_unmount_filesystems(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+	monkeypatch.setattr(logger, '_path', tmp_path)
+	from archinstall.lib.disk.device_handler import DeviceHandler
 
-	with pytest.raises(DiskError):
-		utils.swapoff(Path('/dev/sda2'))
+	handler = DeviceHandler.__new__(DeviceHandler)
+	handler._devices = {
+		Path('/dev/sda'): Mock(
+			partition_infos=[
+				Mock(path=Path('/dev/sda1'), fs_type=FilesystemType.EXT4),
+				Mock(path=Path('/dev/sda2'), fs_type=FilesystemType.LINUX_SWAP),
+			]
+		),
+	}
+	command = Mock()
+	command.return_value.output.return_value = b'/dev/sda2\n'
+	monkeypatch.setattr(utils, 'SysCommand', command)
+	unmount = Mock()
+	monkeypatch.setattr('archinstall.lib.disk.device_handler.umount', unmount)
+
+	handler.umount_all_existing(Path('/dev/sda'))
+
+	unmount.assert_called_once_with(Path('/dev/sda1'), recursive=True)
+	assert command.call_args_list == [call(SWAPON_QUERY), call(['swapoff', '/dev/sda2'])]
