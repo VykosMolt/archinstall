@@ -1,6 +1,6 @@
 from typing import override
 
-from archinstall.default_profiles.desktops.utils import seat_access_of, select_seat_access
+from archinstall.default_profiles.desktops.utils import SeatAccess, select_seat_access
 from archinstall.default_profiles.profile import CustomSetting, DisplayServerType, GreeterType, Profile, ProfileType
 
 
@@ -18,7 +18,11 @@ class NiriProfile(Profile):
 	@property
 	@override
 	def packages(self) -> list[str]:
-		packages = [
+		additional = []
+		if seat := self.custom_settings.get(CustomSetting.SeatAccess, None):
+			additional = [seat]
+
+		return [
 			'niri',
 			'alacritty',
 			'fuzzel',
@@ -29,12 +33,7 @@ class NiriProfile(Profile):
 			'swayidle',
 			'swaylock',
 			'xdg-desktop-portal-gnome',
-		]
-
-		if seat := seat_access_of(self):
-			packages += seat.packages
-
-		return packages
+		] + additional
 
 	@property
 	@override
@@ -44,8 +43,8 @@ class NiriProfile(Profile):
 	@property
 	@override
 	def services(self) -> list[str]:
-		if seat := seat_access_of(self):
-			return seat.services
+		if self.custom_settings.get(CustomSetting.SeatAccess) == SeatAccess.Seatd:
+			return ['seatd']
 		return []
 
 	@override
