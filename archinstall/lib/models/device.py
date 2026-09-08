@@ -1637,8 +1637,6 @@ class LsblkInfo(BaseModel):
 	@field_validator('mountpoint', mode='before')
 	@classmethod
 	def remove_swap_mountpoint(cls, value: Any) -> Any:
-		# '[SWAP]' is lsblk saying the partition is in use as swap. It is not a
-		# folder anything is mounted at, so it must not become one.
 		if value == SWAP_MOUNTPOINT:
 			return None
 		return value

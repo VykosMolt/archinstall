@@ -199,10 +199,7 @@ def swapon(path: Path) -> None:
 
 
 def _active_swap_areas() -> set[Path]:
-	# Ask swapon what is being used as swap right now. That can be a partition,
-	# an encrypted or LVM device, or an ordinary file, so these are not always
-	# devices. The paths are resolved because swap can be switched on through a
-	# link such as /dev/disk/by-uuid/..., while swapon reports what it points at.
+	# swapon includes swap files; lsblk only handles block devices.
 	try:
 		output = SysCommand(['swapon', '--show=NAME', '--noheadings', '--raw']).decode()
 	except SysCallError as err:
@@ -212,9 +209,7 @@ def _active_swap_areas() -> set[Path]:
 
 
 def swapoff(path: Path) -> None:
-	# swapoff fails if it is pointed at something that is not currently being
-	# used as swap, so check first. That also makes this safe to call on a
-	# partition whose swap is already off: it simply does nothing.
+	# swapoff rejects inactive areas; resolve aliases before checking.
 	if path.resolve() not in _active_swap_areas():
 		return
 

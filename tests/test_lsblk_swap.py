@@ -8,7 +8,6 @@ from archinstall.lib.disk import utils
 from archinstall.lib.exceptions import DiskError, SysCallError
 from archinstall.lib.models.device import LsblkInfo
 
-# One entry from `lsblk --json --bytes`, using the columns archinstall asks for.
 SAMPLE_PARTITION: dict[str, Any] = {
 	'name': 'sda2',
 	'path': '/dev/sda2',
@@ -83,8 +82,6 @@ def test_regular_mountpoints_are_untouched() -> None:
 
 
 def test_a_mountpoint_containing_brackets_is_kept() -> None:
-	# Only that exact string is dropped. '[SWAP]' is the only thing lsblk ever
-	# puts in brackets, and a real folder is allowed brackets in its name.
 	info = _lsblk_info(fstype='ext4', mountpoint='/mnt/[backup]', mountpoints=['/mnt/[backup]'])
 
 	assert info.mountpoint == Path('/mnt/[backup]')
@@ -97,7 +94,6 @@ def test_swapoff_does_nothing_when_the_path_is_not_active(monkeypatch: pytest.Mo
 
 	utils.swapoff(Path('/dev/sdb1'))
 
-	# The list of active swap is checked, and nothing is switched off.
 	assert commands == [SWAPON_QUERY]
 
 
@@ -114,9 +110,6 @@ def test_swapoff_matches_an_active_area_reached_through_a_symlink(
 	monkeypatch: pytest.MonkeyPatch,
 	tmp_path: Path,
 ) -> None:
-	# Swap can be switched on through a link like /dev/disk/by-uuid/... while
-	# swapon reports the device it points at, so both have to be compared in the
-	# same form.
 	device = tmp_path / 'sda2'
 	device.touch()
 	link = tmp_path / 'by-uuid'
@@ -131,8 +124,6 @@ def test_swapoff_matches_an_active_area_reached_through_a_symlink(
 
 
 def test_a_failed_swap_query_is_raised_as_a_disk_error(monkeypatch: pytest.MonkeyPatch) -> None:
-	# If we cannot find out what is in use, we cannot know it is safe to skip,
-	# so this has to fail rather than quietly do nothing.
 	def _run(cmd: list[str]) -> Any:
 		raise SysCallError('swapon failed', exit_code=1)
 
