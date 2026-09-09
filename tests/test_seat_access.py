@@ -29,7 +29,7 @@ def test_seat_access_selection(
 			('systemd-logind', 'polkit'),
 		]
 		index = group.get_focused_index()
-		assert index == (1 if default == 'polkit' else 0)
+		assert index == (0 if default == 'seatd' else 1)
 		if choice is None:
 			return Result[SeatAccess].selection(group.get_enabled_items()[index].get_value())
 		return Result[SeatAccess].selection(next(item.get_value() for item in group.items if item.get_value().value == choice))
@@ -38,7 +38,7 @@ def test_seat_access_selection(
 	profile = profile_type()
 	profile.custom_settings[CustomSetting.SeatAccess] = default
 	asyncio.run(profile.do_on_select())
-	assert profile.custom_settings[CustomSetting.SeatAccess] == (choice or default or 'seatd')
+	assert profile.custom_settings[CustomSetting.SeatAccess] == (choice or default or 'polkit')
 
 
 @pytest.mark.parametrize('profile_type', [HyprlandProfile, LabwcProfile, NiriProfile, SwayProfile])

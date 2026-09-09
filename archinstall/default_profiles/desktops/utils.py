@@ -34,7 +34,7 @@ async def select_seat_access(profile_name: str, default: str | None) -> SeatAcce
 	]
 	group = MenuItemGroup(items, sort_items=True)
 
-	group.set_focus_by_value(default)
+	group.set_focus_by_value(default or SeatAccess.Logind)
 
 	result = await Selection[SeatAccess](
 		group,
